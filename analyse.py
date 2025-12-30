@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
+from scipy.signal import argrelextrema
 
 # def debug_image_processing(image_path, threshold=70):
 #     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -55,66 +56,236 @@ from scipy.signal import savgol_filter
 
 # debug_image_processing("fraun.png")
 
-def image_to_function(image_path, smooth=True):
+import cv2
+import numpy as np
+
+def intensity_band_mask(image_path, dI=0.01):
+    # Read grayscale
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError("Image not found")
 
-    h, w = img.shape
+    # Normalize to [0, 1]
+    img_f = img.astype(np.float32) / 255.0
+    I_max = img_f.max()
 
-    # Optional smoothing to suppress vertical streaks
-    if smooth:
-        img = cv2.GaussianBlur(img, (5, 5), 0)
 
-    # Vertical gradient (detect horizontal edges)
-    grad_y = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
-    grad_y = np.abs(grad_y)
+    # Band-pass mask
+    mask = np.logical_and(
+        img_f >= (I_max - dI),
+        img_f <= (I_max + dI)
+    )
 
-    xs = np.arange(w)
-    ys = np.zeros(w)
+    # Convert to uint8 image (0 or 255)
+    mask = (mask.astype(np.uint8)) * 255
 
-    for x in range(160,w-155):
-        column = grad_y[:, x]
+    return img_f, mask
 
-        # Ignore borders
-        column[:10] = 0
-        column[-10:] = 0
+img_f, mask = intensity_band_mask("fraun.png", dI=0.04)
 
-        # Strongest vertical edge
-        ys[x] = np.argmax(column)
+plt.figure(figsize=(12,4))
 
-    # Convert image coords → Cartesian
-    c=0
-    for i in ys:
-        if i!=0:
-            ys[c] = h - i
-        else:
-            ys[c] = h/8 + np.sin(c/5)*20 + np.random.rand()*10
-        c+=1
+plt.subplot(1,3,1)
+plt.imshow(img_f, cmap="gray")
+plt.title("Normalized grayscale")
+plt.axis("off")
 
-    # if len(ys) > 51:
-    #     ys = savgol_filter(ys, 10, 3)
+plt.subplot(1,3,2)
+plt.imshow(mask, cmap="gray")
+plt.title("Intensity band mask")
+plt.axis("off")
+
+plt.subplot(1,3,3)
+plt.imshow(img_f, cmap="gray")
+plt.imshow(mask, cmap="jet", alpha=0.6)
+plt.title("Mask overlay")
+plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+
+
+def mask_to_function(mask):
+    """
+    mask: binary image (0 or 255), shape (H, W)
+    returns: x array, y(x) array
+    """
+    H, W = mask.shape
+
+    xs = []
+    ys = []
+
+    for x in range(W):
+        # Find y-indices where mask is white
+        y_vals = np.where(mask[:, x] > 0)[0]
+
+        if len(y_vals) == 0:
+            continue  # no data in this column
+
+        y_mean = np.mean(y_vals)
+
+        xs.append(x)
+        ys.append(y_mean)
+
+    xs = np.array(xs)
+    ys = np.array(ys)
+
+    # Convert image coords → Cartesian coords
+    ys = H - ys
 
     return xs, ys
 
+x, y = mask_to_function(mask)
+y = savgol_filter(y, 3, 2)
 
-x, y = image_to_function("fraun.png")
+# def find_local_minima(y):
+#     """
+#     Returns indices of strict local minima
+#     """
+#     minima = []
+#     for i in range(1, len(y) - 1):
+#         if y[i] < y[i - 1] and y[i] < y[i + 1]:
+#             minima.append(i)
+#     return minima
 
-def plot_extracted_function(x, y):
-    plt.figure(figsize=(8, 4))
-    plt.plot(x, y, color='black', linewidth=2)
-    plt.xlabel("x (pixels)")
-    plt.ylabel("y (pixels)")
-    plt.title("Extracted boundary: y = f(x)")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+def find_local_minima(y,gap,bar_height):
+    minima=[]
+    for i in range(1,len(y)-1):
+        if y[i] <= y[i-1] and y[i] <= y[i+1]:
+            print(i)
+            for j in range(i+1,min(len(y)-1,i+gap)):
+                if y[j] >= y[j-1] and y[j] >= y[j+1] and (y[j]-y[i]) > bar_height:
+                    print(i,j)
+                    minima.append(i)
+                    break
+    return minima
 
-# plot_extracted_function(x, y)
+def rescale_around_minima(y, window=2):
+    """
+    y: 1D numpy array
+    window: half-width of rescaling window
+    """
+    y2 = y.copy()
+    N = len(y)
+
+    minima = find_local_minima(y,20,16)
+
+    for i in minima:
+        L = max(0, i - window)
+        R = min(N - 1, i + window)
+
+        yL = y[L]
+        yR = y[R]
+        y0 = y[i]
+
+        # Skip degenerate cases
+        if yL == y0 or yR == y0:
+            continue
+
+        # Left side: map y0 → 0, yL → yL
+        for j in range(L, i + 1):
+            # y2[j] = (y[j] - y0) * (yL / (yL - y0))
+            y2[j] = y[j] - y0*(j-L)/(i-L)
+
+        # Right side: map y0 → 0, yR → yR
+        for j in range(i, R + 1):
+            # y2[j] = (y[j] - y0) * (yR / (yR - y0))
+            y2[j] = y[j] - y0*(j-R)/(i-R)
+
+    return y2
+
+# minima = find_local_minima(y,30,20)
+y_new = rescale_around_minima(y, window=3)
+
+def sinc_to_sin(y):
+    y2=y.copy()
+    fact=-1
+    for i in range(len(y2)):
+        y2[i]=fact*(y[i]**0.5)
+        if y2[i]==0:
+            fact*=-1
+    return y2
+
+y_final=sinc_to_sin(y_new)
+
+# plt.plot(x, y, color='black')
+plt.plot(x,y_final, color='red')
+# plt.scatter(minima, y_new[minima], color='blue')
+plt.xlabel("x (pixels)")
+plt.ylabel("y (pixels)")
+plt.xticks(np.arange(0, np.max(x)+1, 50))
+plt.title("Extracted boundary: y = f(x)")
+plt.grid(True, alpha=0.3)
+plt.show()
+
+
+# plt.figure(figsize=(6,4))
+# plt.imshow(vis)
+# plt.axis("off")
+# plt.show()
+
+
+# def image_to_function(image_path, smooth=True):
+#     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+#     if img is None:
+#         raise ValueError("Image not found")
+
+#     h, w = img.shape
+
+#     # Optional smoothing to suppress vertical streaks
+#     if smooth:
+#         img = cv2.GaussianBlur(img, (5, 5), 0)
+
+#     # Vertical gradient (detect horizontal edges)
+#     grad_y = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
+#     grad_y = np.abs(grad_y)
+
+#     xs = np.arange(w)
+#     ys = np.zeros(w)
+
+#     for x in range(160,w-155):
+#         column = grad_y[:, x]
+
+#         # Ignore borders
+#         column[:10] = 0
+#         column[-10:] = 0
+
+#         # Strongest vertical edge
+#         ys[x] = np.argmax(column)
+
+#     # Convert image coords → Cartesian
+#     c=0
+#     for i in ys:
+#         if i!=0:
+#             ys[c] = h - i
+#         else:
+#             ys[c] = h/100
+#         c+=1
+
+#     # if len(ys) > 51:
+#     #     ys = savgol_filter(ys, 10, 3)
+
+#     return xs, ys
+
+
+# x, y = image_to_function("fraun.png")
+
+# def plot_extracted_function(x, y):
+#     plt.figure(figsize=(8, 4))
+#     plt.plot(x, y, color='black', linewidth=2)
+#     plt.xlabel("x (pixels)")
+#     plt.ylabel("y (pixels)")
+#     plt.title("Extracted boundary: y = f(x)")
+#     plt.grid(True, alpha=0.3)
+#     plt.tight_layout()
+#     plt.show()
+
+# # plot_extracted_function(x, y)
 
 
 # ----- define domain -----
-N = 730          # number of points
+print(np.size(x))
+N = 685          # number of points
 # L = 50          # domain size
 # dx = L / N
 # x = np.linspace(-L/2, L/2, N)
@@ -134,11 +305,9 @@ N = 730          # number of points
 # def f(x):
 #     return a*ddf(x-dist,sigma) + ddf(x+dist,sigma) + 0.1*ddf0(x+dist,0.2) + a*0.1*ddf0(x-dist,0.2) # example: Gaussian
 
-fx = y
-L = np.size(y)
-print(L)
+fx = y_final
+L = np.size(y_final)
 x = np.linspace(-L/2, L/2, N)
-print(np.size(x))
 dx=L/N
 
 
@@ -148,7 +317,7 @@ F = np.fft.fftshift(F)
 
 # corresponding k values
 k = 2 * np.pi * np.fft.fftfreq(N, d=dx)
-k = np.fft.ifftshift(k)
+k = np.fft.fftshift(k)
 
 # ----- plot -----
 plt.figure(figsize=(12,4))
