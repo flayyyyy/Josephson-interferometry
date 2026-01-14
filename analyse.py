@@ -59,7 +59,7 @@ from scipy.signal import argrelextrema
 import cv2
 import numpy as np
 
-def intensity_band_mask(image_path, dI=0.01):
+def intensity_band_mask(image_path, dI):
     # Read grayscale
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -81,7 +81,9 @@ def intensity_band_mask(image_path, dI=0.01):
 
     return img_f, mask
 
-img_f, mask = intensity_band_mask("fraun.png", dI=0.04)
+img_f, mask = intensity_band_mask("fraun.png", dI=0.05)
+
+# mask = cv2.bilateralFilter(mask,9,75,75)
 
 plt.figure(figsize=(12,4))
 
@@ -136,7 +138,7 @@ def mask_to_function(mask):
     return xs, ys
 
 x, y = mask_to_function(mask)
-y = savgol_filter(y, 3, 2)
+# y = savgol_filter(y, 5, 2)
 
 # def find_local_minima(y):
 #     """
@@ -152,15 +154,13 @@ def find_local_minima(y,gap,bar_height):
     minima=[]
     for i in range(1,len(y)-1):
         if y[i] <= y[i-1] and y[i] <= y[i+1]:
-            print(i)
             for j in range(i+1,min(len(y)-1,i+gap)):
                 if y[j] >= y[j-1] and y[j] >= y[j+1] and (y[j]-y[i]) > bar_height:
-                    print(i,j)
                     minima.append(i)
                     break
     return minima
 
-def rescale_around_minima(y, window=2):
+def rescale_around_minima(y, window):
     """
     y: 1D numpy array
     window: half-width of rescaling window
@@ -168,7 +168,7 @@ def rescale_around_minima(y, window=2):
     y2 = y.copy()
     N = len(y)
 
-    minima = find_local_minima(y,20,16)
+    minima = find_local_minima(y,10,10)
 
     for i in minima:
         L = max(0, i - window)
@@ -195,21 +195,22 @@ def rescale_around_minima(y, window=2):
     return y2
 
 # minima = find_local_minima(y,30,20)
-y_new = rescale_around_minima(y, window=3)
+y_new = rescale_around_minima(y, window=20)
 
 def sinc_to_sin(y):
     y2=y.copy()
     fact=-1
     for i in range(len(y2)):
-        y2[i]=fact*(y[i]**0.5)
+        y2[i]=fact*(y[i])
         if y2[i]==0:
             fact*=-1
     return y2
 
 y_final=sinc_to_sin(y_new)
 
+plt.figure(figsize=(12,8))
 # plt.plot(x, y, color='black')
-plt.plot(x,y_final, color='red')
+plt.plot(x,y_new, color='red')
 # plt.scatter(minima, y_new[minima], color='blue')
 plt.xlabel("x (pixels)")
 plt.ylabel("y (pixels)")
@@ -284,8 +285,7 @@ plt.show()
 
 
 # ----- define domain -----
-print(np.size(x))
-N = 685          # number of points
+N = np.size(x)          # number of points
 # L = 50          # domain size
 # dx = L / N
 # x = np.linspace(-L/2, L/2, N)
@@ -329,7 +329,7 @@ plt.ylabel("f(x)")
 plt.title("Function")
 
 ax2 = plt.subplot(1,2,2)
-ax2.set_facecolor('red') 
+ax2.set_facecolor('red')
 plt.plot(k, np.abs(F),color='white', linewidth=2)
 plt.fill_between(k, np.abs(F), 0, color='blue')
 # solid white border
@@ -358,8 +358,7 @@ plt.fill_between(k, np.abs(F), 0, color='blue')
 # plt.fill_between(k, F, alpha=1)
 plt.xlabel("k")
 plt.ylabel(r"$|\tilde f(k)|$")
-plt.xlim(-1,1)
 plt.title("Fourier Transform")
-
+plt.xlim(-1/4,1/4)
 plt.tight_layout()
 plt.show()
